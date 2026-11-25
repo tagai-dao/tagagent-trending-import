@@ -1,0 +1,91 @@
+diff --git a/src/claw.js b/src/claw.js
+index 2217840..03f7aed 100644
+--- a/src/claw.js
++++ b/src/claw.js
+@@ -37,12 +37,14 @@ function assertClawConfig(cfg) {
+   }
+ }
+ 
+-function clawSignerConfig(cfg) {
+-  return {
++function clawSignerConfig(cfg, chain) {
++  const signerConfig = {
+     uid: cfg.uid,
+     sandboxUrl: cfg.sandboxUrl,
+     sandboxToken: cfg.sandboxToken
+   }
++  if (chain) signerConfig.chain = chain
++  return signerConfig
+ }
+ 
+ // ─── 密钥派生 ─────────────────────────────────────────
+@@ -72,10 +74,10 @@ async function getBscOrEthAddress(client) {
+  * 确保沙箱钱包可读出链上地址；失败时尝试 init / reactivate（与 install.sh 行为一致）
+  * @param {ClawSandboxClient} client
+  */
+-async function ensureWalletReadyWithClient(client) {
++async function ensureWalletReadyWithClient(client, chain = 'bsc') {
+   async function tryReady() {
+     try {
+-      await getBscOrEthAddress(client)
++      await client.getRequiredAddress(chain)
+       return true
+     } catch {
+       return false
+@@ -94,21 +96,29 @@ async function ensureWalletReadyWithClient(client) {
+   }
+   if (await tryReady()) return
+   throw new Error(
+-    'Claw wallet not ready: could not read bsc/ethereum address after init/reactivate. Is clay-sandbox running?'
++    `Claw wallet not ready: could not read ${chain} address after init/reactivate. Is clay-sandbox running?`
+   )
+ }
+ 
+ // ─── Signer 创建 ─────────────────────────────────────
+ 
+ /** 用于链上读写：无 privateKey 时用 ClawEthersSigner + 公共 BSC RPC */
+-async function getClawEthersSigner(rpcUrl = DEFAULT_BNB_RPC) {
++async function getClawEthersSigner(rpcUrl = DEFAULT_BNB_RPC, chain = 'bsc') {
++  const normalizedChain = String(chain || '').trim().toLowerCase()
++  if (!['bsc', 'ethereum', 'robinhood'].includes(normalizedChain)) {
++    throw new Error(`Unsupported Claw EVM signing chain: ${chain || '<empty>'}`)
++  }
+   const cfg = loadClawConfig()
+   assertClawConfig(cfg)
+-  const client = new ClawSandboxClient(clawSignerConfig(cfg))
++  const signerConfig = clawSignerConfig(cfg, normalizedChain)
++  const client = new ClawSandboxClient(signerConfig)
++  // The sandbox exposes one shared EVM address under bsc/ethereum. Robinhood
++  // transactions use the ethereum signing curve while their chainId remains
++  // 4663 and is verified by the caller after the raw transaction is decoded.
+   await ensureWalletReadyWithClient(client)
+   const address = await getBscOrEthAddress(client)
+   const provider = new ethers.JsonRpcProvider(rpcUrl)
+-  return new ClawEthersSigner(clawSignerConfig(cfg), provider, address)
++  return new ClawEthersSigner(signerConfig, provider, address)
+ }
+ 
+ /**
+@@ -117,12 +127,12 @@ async function getClawEthersSigner(rpcUrl = DEFAULT_BNB_RPC) {
+  * @param {string} [rpcUrl]
+  * @returns {Promise<import('ethers').Wallet | ClawEthersSigner>}
+  */
+-async function resolveWriteSigner(privateKey, rpcUrl = DEFAULT_BNB_RPC) {
++async function resolveWriteSigner(privateKey, rpcUrl = DEFAULT_BNB_RPC, chain = 'bsc') {
+   if (privateKey && String(privateKey).trim().startsWith('0x')) {
+     const provider = new ethers.JsonRpcProvider(rpcUrl)
+     return new ethers.Wallet(privateKey.trim(), provider)
+   }
+-  return getClawEthersSigner(rpcUrl)
++  return getClawEthersSigner(rpcUrl, chain)
+ }
+ 
+ // ─── 公开业务方法 ─────────────────────────────────────
+@@ -187,6 +197,7 @@ async function syncTagclawWalletEnv(opts = {}) {
+ }
+ 
+ export {
++  getClawEthersSigner,
+   resolveWriteSigner,
+   signMessage,
+   generateSteemKeysFromClaw,
